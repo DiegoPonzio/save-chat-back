@@ -52,13 +52,39 @@ manager = ConnectionManager()
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
 
-    # ❌ NO hacer accept aquí si ya está en manager
-    init_data = await websocket.receive_text()
-    init_json = json.loads(init_data)
+    # 🔥 inicialización segura
+    user_id = None
+    username = "Anon"
 
-    username = init_json.get("username", "Anon")
-    user_id = await manager.connect(websocket, username)  # 👈 aquí debe hacer accept
+    # 🔌 aceptar conexión
+    try:
+        await websocket.accept()
+    except Exception as e:
+        print("Error en accept:", e)
+        return
 
+    # 🧠 handshake inicial
+    try:
+        init_data = await websocket.receive_text()
+        init_json = json.loads(init_data)
+
+        username = init_json.get("username", "Anon")
+        user_id = manager.connect(websocket, username)
+
+        await manager.broadcast_users()
+
+    except WebSocketDisconnect:
+        print("Se desconectó antes de iniciar")
+        return
+    except Exception as e:
+        print("Error inicial:", e)
+        try:
+            await websocket.close()
+        except:
+            pass
+        return
+
+    # 💬 loop principal
     try:
         while True:
             data = await websocket.receive_text()
@@ -66,15 +92,15 @@ async def websocket_endpoint(websocket: WebSocket):
 
             msg_type = msg.get("type")
 
-            # ✍️ Typing
+            # ✍️ typing
             if msg_type == "typing":
                 await manager.broadcast_typing(username)
                 continue
 
-            # 💬 Mensajes
+            # 💬 mensajes
             if msg_type == "message":
 
-                # 🔇 Usuario muteado
+                # 🔇 mute
                 if manager.muted.get(user_id, False):
                     await manager.send_personal({
                         "type": "system",
@@ -84,7 +110,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
                 text = msg.get("data", "")
 
-                # 🚫 Filtro rápido
+                # 🚫 filtro regex
                 if contiene_malas_palabras(text):
                     manager.strikes[user_id] += 1
 
@@ -92,10 +118,9 @@ async def websocket_endpoint(websocket: WebSocket):
                         "type": "strike",
                         "data": f"⚠️ Strike {manager.strikes[user_id]} (lenguaje prohibido)"
                     }, user_id)
-
                     continue
 
-                # 🤖 Filtro ML
+                # 🤖 ML
                 toxico, score, nivel = es_toxico_ml(text)
 
                 # 🚨 BAN
@@ -105,8 +130,11 @@ async def websocket_endpoint(websocket: WebSocket):
                         "data": f"⛔ Mensaje bloqueado ({score:.2f})"
                     }, user_id)
 
-                    manager.disconnect(user_id)  # 🔥 primero quitar
-                    await websocket.close()      # 🔥 luego cerrar
+                    manager.disconnect(user_id)
+                    try:
+                        await websocket.close()
+                    except:
+                        pass
                     return
 
                 # ⚠️ STRIKE
@@ -133,7 +161,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         "data": text
                     })
 
-                # 🔇 SILENCIO
+                # 🔇 silencio
                 if manager.strikes[user_id] >= 3 and not manager.muted.get(user_id, False):
                     manager.muted[user_id] = True
 
@@ -142,23 +170,34 @@ async def websocket_endpoint(websocket: WebSocket):
                         "data": "🔇 Has sido silenciado"
                     }, user_id)
 
-                # 🚫 EXPULSIÓN
+                # 🚫 expulsión
                 if manager.strikes[user_id] >= 5:
                     await manager.send_personal({
                         "type": "system",
                         "data": "⛔ Has sido expulsado"
                     }, user_id)
 
-                    manager.disconnect(user_id)  # 🔥 primero
-                    await websocket.close()      # 🔥 después
+                    manager.disconnect(user_id)
+                    try:
+                        await websocket.close()
+                    except:
+                        pass
                     return
 
     except WebSocketDisconnect:
-        manager.disconnect(user_id)
+        print(f"{username} desconectado")
 
-        await manager.broadcast_users()
+    except Exception as e:
+        print("Error en loop:", e)
 
-        await manager.broadcast({
-            "type": "system",
-            "data": f"👋 {username} se desconectó"
-        })
+    finally:
+        # 🧹 limpieza SIEMPRE
+        if user_id and user_id in manager.active_connections:
+            manager.disconnect(user_id)
+
+            await manager.broadcast_users()
+
+            await manager.broadcast({
+                "type": "system",
+                "data": f"👋 {username} se desconectó"
+            })

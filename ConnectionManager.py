@@ -12,8 +12,6 @@ class ConnectionManager:
         self.muted: Dict[str, bool] = {}
 
     async def connect(self, websocket: WebSocket, username: str):
-        await websocket.accept()
-
         user_id = str(uuid.uuid4())
 
         self.active_connections[user_id] = websocket
